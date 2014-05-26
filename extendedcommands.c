@@ -538,6 +538,8 @@ int confirm_selection(const char* title, const char* confirm) {
     int many_confirm;
     char* confirm_str = strdup(confirm);
     const char* confirm_headers[] = { title, "  THIS CAN NOT BE UNDONE.", "", NULL };
+    int old_val = ui_is_showing_back_button();
+    ui_set_showing_back_button(0);
 
     sprintf(path, "%s%s%s", get_primary_storage_path(), (is_data_media() ? "/0/" : "/"), RECOVERY_MANY_CONFIRM_FILE);
     ensure_path_mounted(path);
@@ -565,7 +567,9 @@ int confirm_selection(const char* title, const char* confirm) {
         int chosen_item = get_menu_selection(confirm_headers, items, 0, 0);
         ret = (chosen_item == 1);
     }
+
     free(confirm_str);
+    ui_set_showing_back_button(old_val);
     return ret;
 }
 
@@ -916,6 +920,10 @@ int show_partition_menu() {
                 else
                     ui_print("Done.\n");
                 ignore_data_media_workaround(0);
+
+                // recreate /data/media with proper permissions
+                ensure_path_mounted("/data");
+                setup_data_media();
             }
         } else if (is_data_media() && chosen_item == (mountable_volumes + formatable_volumes + 1)) {
             show_mount_usb_storage_menu();
@@ -1278,7 +1286,14 @@ void format_sdcard(const char* volume) {
                 sprintf(cmd, "/sbin/mkntfs -f %s", v->blk_device);
                 ret = __system(cmd);
             } else if (strcmp(list[chosen_item], "ext4") == 0) {
-                ret = make_ext4fs(v->blk_device, v->length, volume, sehandle);
+                char *secontext = NULL;
+                if (selabel_lookup(sehandle, &secontext, v->mount_point, S_IFDIR) < 0) {
+                    LOGE("cannot lookup security context for %s\n", v->mount_point);
+                    ret = make_ext4fs(v->blk_device, v->length, volume, NULL);
+                } else {
+                    ret = make_ext4fs(v->blk_device, v->length, volume, sehandle);
+                    freecon(secontext);
+                }
             }
             break;
         }
@@ -1536,7 +1551,9 @@ int show_advanced_menu() {
                 break;
             }
             case 6:
-                ui_printlogtail(12);
+                ui_printlogtail(24);
+                ui_wait_key();
+                ui_clear_key_queue();
                 break;
             default:
 #ifdef BOARD_NATIVE_DUALBOOT_SINGLEDATA
@@ -1721,10 +1738,6 @@ int verify_root_and_recovery() {
     if (ensure_path_mounted("/system") != 0)
         return 0;
 
-    // none of these options should get a "Go Back" option
-    int old_val = ui_get_showing_back_button();
-    ui_set_showing_back_button(0);
-
     int ret = 0;
     struct stat st;
     // check to see if install-recovery.sh is going to clobber recovery
@@ -1780,6 +1793,5 @@ int verify_root_and_recovery() {
     }
 
     ensure_path_unmounted("/system");
-    ui_set_showing_back_button(old_val);
     return ret;
 }
